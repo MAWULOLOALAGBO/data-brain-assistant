@@ -2,317 +2,362 @@ import streamlit as st
 import pandas as pd
 import json
 import re
-from typing import Dict, List, Any
+import numpy as np
+from io import StringIO
 
-st.set_page_config(page_title="Data Brain Assistant", layout="wide")
+# ==================== CONFIGURATION ====================
 
-# Initialisation
-for key in ['data', 'history', 'plan', 'column_types', 'synonyms']:
-    if key not in st.session_state:
-        st.session_state[key] = {} if key in ['column_types', 'synonyms'] else ([] if key == 'history' else None)
+st.set_page_config(page_title="Data Brain Assistant", layout="wide", page_icon="🧠")
 
-st.title("🧠 Data Brain Assistant")
-st.markdown("*Analyse universelle de n'importe quel fichier*")
+# Initialisation session state
+if 'data' not in st.session_state:
+    st.session_state.data = None
+if 'history' not in st.session_state:
+    st.session_state.history = []
+if 'plan' not in st.session_state:
+    st.session_state.plan = None
 
-# ==================== FONCTIONS UNIVERSELLES ====================
+# ==================== FONCTIONS UTILITAIRES ====================
 
-def infer_column_types(df: pd.DataFrame) -> Dict[str, str]:
-    """Détecte automatiquement le type sémantique de chaque colonne"""
-    types = {}
-    
+def infer_types(df):
+    """Inférence intelligente des types de données"""
+    df = df.copy()
     for col in df.columns:
-        dtype = df[col].dtype
-        sample = df[col].dropna().head(10).tolist()
-        sample_str = ' '.join([str(s).lower() for s in sample])
-        
-        # Détection numérique
-        if pd.api.types.is_numeric_dtype(dtype):
-            # Est-ce un ID ?
-            if 'id' in col.lower() or all(str(x).isdigit() and int(x) > 10000 for x in sample if pd.notna(x)):
-                types[col] = 'id'
-            # Est-ce une date (année) ?
-            elif any(year in col.lower() for year in ['year', 'annee', 'mois', 'month', 'jour', 'day', 'date']):
-                types[col] = 'temporal'
-            # Est-ce un prix/valeur monétaire ?
-            elif any(money in col.lower() for money in ['price', 'prix', 'cost', 'cout', 'revenue', 'montant', 'salary', 'salaire', 'eur', 'usd', '€', '$']):
-                types[col] = 'monetary'
-            # Est-ce une quantité ?
-            elif any(qty in col.lower() for qty in ['quantity', 'quantite', 'count', 'nombre', 'units', 'total', 'nombre', 'volume']):
-                types[col] = 'quantity'
-            # Est-ce un pourcentage ?
-            elif any(pct in col.lower() for pct in ['percentage', 'pourcent', 'rate', 'taux', 'ratio', 'share', 'part']):
-                types[col] = 'percentage'
-            else:
-                types[col] = 'numeric'
+        # Détection datetime
+        if df[col].dtype == 'object':
+            try:
+                df[col] = pd.to_datetime(df[col])
+                continue
+            except:
+                pass
+            
+            # Détection numérique
+            try:
+                df[col] = pd.to_numeric(df[col].str.replace(',', '.').str.replace(' ', ''))
+                continue
+            except:
+                pass
                 
-        # Détection texte/catégoriel
-        elif pd.api.types.is_object_dtype(dtype) or pd.api.types.is_string_dtype(dtype):
-            unique_ratio = df[col].nunique() / len(df)
-            unique_count = df[col].nunique()
-            
-            # Est-ce un genre/sexe ?
-            if any(g in col.lower() for g in ['gender', 'sexe', 'sex']) or set(sample).issubset({'Male', 'Female', 'M', 'F', 'Homme', 'Femme', '0', '1', 'M', 'F'}):
-                types[col] = 'gender'
-            # Est-ce une localisation ?
-            elif any(loc in col.lower() for loc in ['country', 'pays', 'region', 'city', 'ville', 'location', 'zone', 'area', 'departement', 'state']):
-                types[col] = 'location'
-            # Est-ce un type/catégorie ?
-            elif any(cat in col.lower() for cat in ['type', 'category', 'categorie', 'class', 'classe', 'group', 'groupe', 'segment']):
-                types[col] = 'category'
-            # Est-ce un nom ?
-            elif any(name in col.lower() for name in ['name', 'nom', 'title', 'titre', 'label']):
-                types[col] = 'name'
-            # Binaire (oui/non, true/false) ?
-            elif set(sample).issubset({'Yes', 'No', 'Oui', 'Non', 'True', 'False', '0', '1', 'Y', 'N'}):
-                types[col] = 'binary'
-            # ID textuel ?
-            elif 'id' in col.lower() or unique_ratio > 0.9:
-                types[col] = 'id_text'
-            # Catégorielle avec peu de valeurs uniques
-            elif unique_count < 20 or unique_ratio < 0.1:
-                types[col] = 'categorical'
-            else:
-                types[col] = 'text'
-        
-        # Dates
-        elif pd.api.types.is_datetime64_any_dtype(dtype):
-            types[col] = 'datetime'
-            
-    return types
-
-def find_column_by_semantic(query: str, columns: List[str], col_types: Dict[str, str]) -> List[str]:
-    """Trouve les colonnes par sens, pas juste par nom exact"""
-    query_lower = query.lower()
-    matches = []
+            # Détection catégorielle
+            if df[col].nunique() / len(df) < 0.05:
+                df[col] = df[col].astype('category')
     
-    # Mots-clés universels par type
-    semantic_keywords = {
-        'gender': ['genre', 'sexe', 'gender', 'sex', 'homme', 'femme', 'male', 'female', 'masculin', 'feminin'],
-        'location': ['region', 'pays', 'country', 'ville', 'city', 'zone', 'area', 'lieu', 'place', 'localisation', 'geo'],
-        'temporal': ['date', 'temps', 'time', 'annee', 'year', 'mois', 'month', 'jour', 'day', 'periode', 'period'],
-        'monetary': ['prix', 'price', 'cout', 'cost', 'revenu', 'revenue', 'argent', 'money', 'montant', 'amount', 'salaire', 'salary', 'gain', 'profit'],
-        'quantity': ['quantite', 'quantity', 'nombre', 'count', 'number', 'total', 'volume', 'unites', 'units', 'volume', 'somme'],
-        'percentage': ['pourcentage', 'percentage', 'taux', 'rate', 'ratio', 'proportion', 'part', 'share'],
-        'numeric': ['valeur', 'value', 'mesure', 'measure', 'score', 'points', 'indice', 'index']
+    return df
+
+def generate_suggestions(df):
+    """Génère des suggestions contextuelles basées sur les données"""
+    suggestions = []
+    
+    # Suggestion 1 : Statistiques générales
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if num_cols:
+        suggestions.append(f"moyenne de {num_cols[0]}")
+    
+    # Suggestion 2 : Visualisation
+    if len(num_cols) > 0:
+        suggestions.append(f"histogramme de {num_cols[0]}")
+    
+    # Suggestion 3 : Groupby si colonnes catégorielles
+    cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    if cat_cols and num_cols:
+        suggestions.append(f"moyenne de {num_cols[0]} par {cat_cols[0]}")
+    
+    # Compléter si besoin
+    while len(suggestions) < 3:
+        suggestions.append("describe")
+    
+    return suggestions[:3]
+
+def find_column(query, columns):
+    """Trouve la meilleure correspondance de colonne"""
+    query_lower = query.lower()
+    
+    # Correspondance exacte
+    for col in columns:
+        if col.lower() == query_lower:
+            return col
+    
+    # Correspondance partielle
+    for col in columns:
+        if query_lower in col.lower() or col.lower() in query_lower:
+            return col
+    
+    # Synonymes communs
+    synonyms = {
+        'genre': ['gender', 'sex', 'sexe'],
+        'prix': ['price', 'prix', 'cost', 'coût', 'avg_price', 'revenue', 'revenu'],
+        'revenu': ['revenue', 'income', 'salaire', 'salary', 'revenu'],
+        'quantite': ['quantity', 'quantité', 'qty', 'units', 'units_sold', 'volume'],
+        'age': ['age', 'âge', 'annee', 'year'],
+        'region': ['region', 'région', 'area', 'zone', 'country', 'pays', 'ville', 'city'],
+        'date': ['date', 'time', 'timestamp', 'datetime', 'mois', 'month', 'jour', 'day'],
+        'nom': ['name', 'nom', 'id', 'identifier', 'user_id', 'client'],
+        'categorie': ['category', 'categorie', 'catégorie', 'type', 'segment', 'model', 'modele']
     }
     
-    # 1. Recherche par type sémantique
-    for col, col_type in col_types.items():
-        if col_type in semantic_keywords:
-            keywords = semantic_keywords[col_type]
-            if any(kw in query_lower for kw in keywords):
-                if col not in matches:
-                    matches.append(col)
+    for key, values in synonyms.items():
+        if query_lower in key or key in query_lower:
+            for col in columns:
+                for syn in values:
+                    if syn in col.lower():
+                        return col
     
-    # 2. Recherche par nom de colonne (fuzzy)
-    for col in columns:
-        col_lower = col.lower().replace('_', ' ')
-        # Mot exact ou partie du mot
-        if col_lower in query_lower or any(word in col_lower for word in query_lower.split()):
-            if col not in matches:
-                matches.append(col)
-        # Suppression des suffixes/prefixes communs
-        clean_col = re.sub(r'(id_|_id|_name|_code|_num|number|n°|no)', '', col_lower)
-        if clean_col in query_lower and len(clean_col) > 2:
-            if col not in matches:
-                matches.append(col)
-    
-    # 3. Recherche par contenu (valeurs uniques)
-    if not matches:
-        for col in columns:
-            if col_types.get(col) in ['categorical', 'gender', 'location', 'binary']:
-                try:
-                    unique_vals = [str(v).lower() for v in st.session_state.data[col].dropna().unique()[:10]]
-                    if any(val in query_lower for val in unique_vals if len(val) > 2):
-                        matches.append(col)
-                        break
-                except:
-                    pass
-    
-    return matches if matches else columns[:1]  # Retourne première colonne par défaut
+    return None
 
-def parse_query_universal(query: str, df: pd.DataFrame, col_types: Dict[str, str]) -> Dict[str, Any]:
-    """Parseur universel qui comprend le sens, pas juste les mots"""
+def parse_query_v2(query, df):
+    """Parseur intelligent v2 avec groupby et synonymes"""
     query_lower = query.lower()
     columns = list(df.columns)
     
-    # Détection des colonnes concernées (sémantique)
-    detected_cols = find_column_by_semantic(query, columns, col_types)
+    # Détection groupby
+    groupby_col = None
+    groupby_match = re.search(r'par\s+(\w+)', query_lower)
+    if groupby_match:
+        groupby_candidate = groupby_match.group(1)
+        groupby_col = find_column(groupby_candidate, columns)
     
-    # Détection de l'action par patterns universels
+    # Détection des colonnes cibles
+    target_cols = []
+    words = re.findall(r'\b\w+\b', query_lower)
+    
+    for word in words:
+        if len(word) > 2:  # Ignorer les mots courts
+            col = find_column(word, columns)
+            if col and col not in target_cols:
+                target_cols.append(col)
+    
+    # Détection intention
     intention = "exploration"
     action = "analyse générale"
     method = "describe()"
-    params = {}
     
-    # PATTERNS STATISTIQUES
-    stat_patterns = {
-        'mean': [r'moyenne|mean|average|avg|moyen'],
-        'sum': [r'somme|sum|total|aggregate'],
-        'min': [r'minimum|min|plus petit|smallest|lowest'],
-        'max': [r'maximum|max|plus grand|largest|biggest|highest'],
-        'median': [r'mediane|median|milieu|middle'],
-        'std': [r'ecart[- ]?type|std|standard|deviation|dispersion'],
-        'count': [r'compte|count|nombre|how many|combien'],
-        'unique': [r'unique|distinct|different|valeurs? uniques?']
-    }
+    # Statistiques
+    if any(w in query_lower for w in ["moyenne", "mean", "moyen", "average"]):
+        intention = "statistique"
+        action = "calcul de la moyenne"
+        method = "mean()"
+    elif any(w in query_lower for w in ["somme", "total", "sum"]):
+        intention = "statistique"
+        action = "calcul de la somme"
+        method = "sum()"
+    elif any(w in query_lower for w in ["minimum", "min", "plus petit"]):
+        intention = "statistique"
+        action = "valeur minimale"
+        method = "min()"
+    elif any(w in query_lower for w in ["maximum", "max", "plus grand"]):
+        intention = "statistique"
+        action = "valeur maximale"
+        method = "max()"
+    elif any(w in query_lower for w in ["mediane", "median", "médiane"]):
+        intention = "statistique"
+        action = "calcul de la médiane"
+        method = "median()"
+    elif any(w in query_lower for w in ["ecart-type", "std", "standard", "variance", "dispersion"]):
+        intention = "statistique"
+        action = "calcul de l'écart-type"
+        method = "std()"
     
-    for stat_name, patterns in stat_patterns.items():
-        if any(re.search(p, query_lower) for p in patterns):
-            intention = "statistique"
-            action = f"calcul {stat_name}"
-            method = f"{stat_name}()"
-            params['stat'] = stat_name
-            break
+    # Visualisation
+    elif any(w in query_lower for w in ["histogramme", "hist", "distribution"]):
+        intention = "visualisation"
+        action = "histogramme de distribution"
+        method = "px.histogram()"
+    elif any(w in query_lower for w in ["barplot", "bar", "barres", "diagramme barre"]):
+        intention = "visualisation"
+        action = "diagramme en barres"
+        method = "px.bar()"
+    elif any(w in query_lower for w in ["camembert", "pie", "secteur", "cercle"]):
+        intention = "visualisation"
+        action = "diagramme circulaire"
+        method = "px.pie()"
+    elif any(w in query_lower for w in ["scatter", "nuage", "point", "correlation", "corrélation", "relation"]):
+        intention = "visualisation"
+        action = "nuage de points"
+        method = "px.scatter()"
+    elif any(w in query_lower for w in ["ligne", "line", "evolution", "évolution", "temporel"]):
+        intention = "visualisation"
+        action = "graphique linéaire"
+        method = "px.line()"
     
-    # PATTERNS VISUALISATION
-    viz_patterns = {
-        'histogram': [r'histogram|distribution|distrib|frequence|freq'],
-        'bar': [r'bar|barplot|bar chart|diagramme.*bar|bâtons?'],
-        'line': [r'line|ligne|courbe|curve|tendance|trend|evolution|temporel'],
-        'scatter': [r'scatter|nuage|point|correlation|relation|xy|croisement'],
-        'pie': [r'pie|camembert|circulaire|proportion|part.*tout'],
-        'box': [r'box|boite|boxplot|quartile|median.*dispersion'],
-        'heatmap': [r'heatmap|correlation.*matrix|matrice.*corr']
-    }
+    # Nettoyage
+    elif any(w in query_lower for w in ["manquant", "missing", "null", "na", "vide", "absent"]):
+        intention = "nettoyage"
+        action = "détection des valeurs manquantes"
+        method = "isnull().sum()"
+    elif any(w in query_lower for w in ["doublon", "duplicate", "dupli", "identique"]):
+        intention = "nettoyage"
+        action = "détection des doublons"
+        method = "duplicated().sum()"
+    elif any(w in query_lower for w in ["outlier", "anomalie", "aberrant", "extreme", "extrême"]):
+        intention = "nettoyage"
+        action = "détection des outliers"
+        method = "IQR method"
     
-    for viz_name, patterns in viz_patterns.items():
-        if any(re.search(p, query_lower) for p in patterns):
-            intention = "visualisation"
-            action = f"graphique {viz_name}"
-            method = f"{viz_name}_plot()"
-            params['chart_type'] = viz_name
-            break
+    # Exploration
+    elif any(w in query_lower for w in ["type", "dtypes", "datatype", "structure"]):
+        intention = "exploration"
+        action = "types de données"
+        method = "dtypes"
+    elif any(w in query_lower for w in ["description", "resume", "résumé", "apercu", "overview"]):
+        intention = "exploration"
+        action = "description statistique"
+        method = "describe()"
+    elif any(w in query_lower for w in ["correlation", "corrélations", "matrice", "heatmap"]):
+        intention = "exploration"
+        action = "matrice de corrélation"
+        method = "corr()"
     
-    # PATTERNS NETTOYAGE
-    clean_patterns = {
-        'missing': [r'manquant|missing|null|na|vide|absent'],
-        'duplicate': [r'doublon|duplicate|repetition|redondant|identique'],
-        'outlier': [r'outlier|anomalie|aberrant|extreme|atypique']
-    }
+    # Si pas de colonnes détectées mais intention spécifique
+    if not target_cols:
+        # Prendre première colonne numérique par défaut pour stats/viz
+        num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        if num_cols and intention in ["statistique", "visualisation"]:
+            target_cols = [num_cols[0]]
+        else:
+            target_cols = ["toutes"]
     
-    for clean_name, patterns in clean_patterns.items():
-        if any(re.search(p, query_lower) for p in patterns):
-            intention = "nettoyage"
-            action = f"détection {clean_name}"
-            method = f"detect_{clean_name}()"
-            params['clean_type'] = clean_name
-            break
-    
-    # PATTERNS GROUPBY ("par", "by")
-    if re.search(r'\b(par|by|pour chaque|per|group.*by)\b', query_lower):
-        # Trouver la colonne de groupement (catégorielle)
-        group_cols = [c for c in detected_cols if col_types.get(c) in ['categorical', 'gender', 'location', 'category', 'binary']]
-        value_cols = [c for c in detected_cols if col_types.get(c) in ['numeric', 'monetary', 'quantity', 'percentage']]
-        
-        if group_cols and value_cols:
-            intention = "statistique" if intention == "exploration" else intention
-            action = f"{action} groupé par {group_cols[0]}"
-            method = f"groupby('{group_cols[0]}').{method}"
-            params['groupby'] = group_cols[0]
-            params['value_col'] = value_cols[0]
-            # Réorganiser pour mettre la colonne de valeur en premier
-            detected_cols = [value_cols[0], group_cols[0]]
-        elif group_cols:
-            params['groupby'] = group_cols[0]
-    
-    # PATTERNS PRÉDICTION
-    pred_patterns = [r'predict|prediction|predire|forecast|prevoir|estimer|estimate|future|futur']
-    if any(re.search(p, query_lower) for p in pred_patterns):
-        intention = "prediction"
-        action = "modèle prédictif"
-        method = "regression/classification"
-        params['target'] = detected_cols[0] if detected_cols else None
-    
-    # Construction de l'explication
-    if detected_cols:
-        col_desc = ", ".join([f"{c} ({col_types.get(c, 'inconnu')})" for c in detected_cols[:2]])
-        explanation = f"Analyse '{action}' sur {col_desc}"
-    else:
-        explanation = f"Analyse générale : {action}"
-    
-    return {
+    # Construction du plan
+    plan = {
         "intention": intention,
         "action": action,
-        "colonnes_concernees": detected_cols if detected_cols else ["toutes"],
-        "methode": method,
-        "explication": explanation,
-        "params": params,
-        "types_detectes": {c: col_types.get(c, 'inconnu') for c in detected_cols[:2]}
+        "target_columns": target_cols,
+        "method": method,
+        "groupby": groupby_col,
+        "confidence": "Haute" if len(target_cols) > 0 and target_cols[0] != "toutes" else "Moyenne",
+        "explanation": f"Analyse '{action}'"
     }
+    
+    if groupby_col:
+        plan["explanation"] += f" groupée par '{groupby_col}'"
+    if target_cols and target_cols[0] != "toutes":
+        plan["explanation"] += f" sur {', '.join(target_cols)}"
+    else:
+        plan["explanation"] += " sur l'ensemble des données"
+    
+    return plan
 
-def generate_code(plan: Dict, df: pd.DataFrame, col_types: Dict[str, str]) -> str:
+def generate_code(plan, df):
     """Génère le code Python selon le plan"""
-    lines = []
-    intent = plan['intention']
-    cols = plan['colonnes_concernees']
-    params = plan.get('params', {})
+    code_lines = []
+    intention = plan['intention']
+    cols = plan['target_columns']
+    groupby = plan.get('groupby')
     
-    if intent == 'statistique':
-        stat = params.get('stat', 'mean')
-        groupby = params.get('groupby')
-        value_col = params.get('value_col', cols[0] if cols else df.columns[0])
-        
-        if groupby and value_col:
-            if stat == 'mean':
-                lines.append(f"result = df.groupby('{groupby}')['{value_col}'].mean().sort_values(ascending=False)")
-            elif stat == 'sum':
-                lines.append(f"result = df.groupby('{groupby}')['{value_col}'].sum().sort_values(ascending=False)")
-            elif stat == 'count':
-                lines.append(f"result = df.groupby('{groupby}').size()")
+    # Import commun
+    if intention == "visualisation":
+        code_lines.append("import plotly.express as px")
+        code_lines.append("import plotly.graph_objects as go")
+    
+    # Construction du code selon intention
+    if intention == "statistique":
+        if cols[0] != "toutes" and len(cols) == 1:
+            col = cols[0]
+            if groupby:
+                code_lines.append(f"result = df.groupby('{groupby}')['{col}'].{plan['method'].replace('()', '')}().reset_index()")
+                code_lines.append(f"result.columns = ['{groupby}', '{plan['method'].replace('()', '')}_{col}']")
             else:
-                lines.append(f"result = df.groupby('{groupby}')['{value_col}'].{stat}()")
+                code_lines.append(f"result = df['{col}'].{plan['method'].replace('()', '')}()")
         else:
-            if cols[0] != 'toutes':
-                lines.append(f"result = df['{cols[0]}'].{stat}()")
+            if groupby:
+                code_lines.append(f"result = df.groupby('{groupby}').{plan['method'].replace('()', '')}()")
             else:
-                lines.append(f"result = df.{stat}()")
+                code_lines.append(f"result = df.{plan['method'].replace('()', '')}()")
     
-    elif intent == 'visualisation':
-        chart = params.get('chart_type', 'line')
-        col = cols[0] if cols and cols[0] != 'toutes' else df.columns[0]
-        col_type = col_types.get(col, 'unknown')
+    elif intention == "visualisation":
+        col = cols[0] if cols[0] != "toutes" else df.select_dtypes(include=[np.number]).columns[0]
         
-        lines.append("import plotly.express as px")
-        lines.append("import plotly.graph_objects as go")
-        
-        if chart == 'histogram':
-            lines.append(f"fig = px.histogram(df, x='{col}', title='Distribution de {col}', color_discrete_sequence=['#3366cc'])")
-        elif chart == 'bar':
-            if col_type in ['categorical', 'gender', 'location']:
-                lines.append(f"value_counts = df['{col}'].value_counts().head(20)")
-                lines.append(f"fig = px.bar(x=value_counts.index, y=value_counts.values, labels={{'x': '{col}', 'y': 'Count'}}, title='Répartition de {col}')")
+        if "histogram" in plan['method']:
+            code_lines.append(f"fig = px.histogram(df, x='{col}', title='Distribution de {col}')")
+            code_lines.append("st.plotly_chart(fig, use_container_width=True)")
+            code_lines.append("result = 'Histogramme affiché'")
+            
+        elif "bar" in plan['method']:
+            if groupby:
+                agg_col = df.select_dtypes(include=[np.number]).columns[0]
+                code_lines.append(f"agg_df = df.groupby('{groupby}')['{agg_col}'].sum().reset_index()")
+                code_lines.append(f"fig = px.bar(agg_df, x='{groupby}', y='{agg_col}', title='{agg_col} par {groupby}')")
             else:
-                lines.append(f"fig = px.bar(df, x=df.index[:50], y='{col}', title='Valeurs de {col}')")
-        elif chart == 'pie':
-            lines.append(f"value_counts = df['{col}'].value_counts().head(10)")
-            lines.append(f"fig = px.pie(names=value_counts.index, values=value_counts.values, title='Répartition de {col}')")
-        elif chart == 'box':
-            lines.append(f"fig = px.box(df, y='{col}', title='Boxplot de {col}')")
-        elif chart == 'scatter' and len(cols) >= 2:
-            lines.append(f"fig = px.scatter(df, x='{cols[0]}', y='{cols[1]}', title='{cols[0]} vs {cols[1]}', opacity=0.6)")
-        else:
-            lines.append(f"fig = px.line(df, y='{col}', title='Évolution de {col}')")
-        
-        lines.append("st.plotly_chart(fig, use_container_width=True)")
-        lines.append("result = 'Graphique généré'")
+                code_lines.append(f"value_counts = df['{col}'].value_counts().head(20).reset_index()")
+                code_lines.append(f"value_counts.columns = ['{col}', 'count']")
+                code_lines.append(f"fig = px.bar(value_counts, x='{col}', y='count', title='Top 20 {col}')")
+            code_lines.append("st.plotly_chart(fig, use_container_width=True)")
+            code_lines.append("result = 'Diagramme en barres affiché'")
+            
+        elif "pie" in plan['method']:
+            code_lines.append(f"value_counts = df['{col}'].value_counts().head(10).reset_index()")
+            code_lines.append(f"value_counts.columns = ['{col}', 'count']")
+            code_lines.append(f"fig = px.pie(value_counts, values='count', names='{col}', title='Répartition {col}')")
+            code_lines.append("st.plotly_chart(fig, use_container_width=True)")
+            code_lines.append("result = 'Camembert affiché'")
+            
+        elif "scatter" in plan['method']:
+            num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            if len(num_cols) >= 2:
+                x_col = cols[0] if cols[0] in num_cols else num_cols[0]
+                y_col = cols[1] if len(cols) > 1 and cols[1] in num_cols else num_cols[1] if len(num_cols) > 1 else num_cols[0]
+                color_col = f", color='{groupby}'" if groupby else ""
+                code_lines.append(f"fig = px.scatter(df, x='{x_col}', y='{y_col}'{color_col}, title='{x_col} vs {y_col}')")
+                code_lines.append("st.plotly_chart(fig, use_container_width=True)")
+                code_lines.append("result = 'Nuage de points affiché'")
+            else:
+                code_lines.append("result = 'Besoin de 2 colonnes numériques pour un scatter plot'")
+                
+        elif "line" in plan['method']:
+            if groupby:
+                num_col = df.select_dtypes(include=[np.number]).columns[0]
+                code_lines.append(f"agg_df = df.groupby('{groupby}')['{num_col}'].sum().reset_index()")
+                code_lines.append(f"fig = px.line(agg_df, x='{groupby}', y='{num_col}', title='Évolution par {groupby}')")
+            else:
+                code_lines.append(f"fig = px.line(df, y='{col}', title='Évolution de {col}')")
+            code_lines.append("st.plotly_chart(fig, use_container_width=True)")
+            code_lines.append("result = 'Graphique linéaire affiché'")
     
-    elif intent == 'nettoyage':
-        clean_type = params.get('clean_type', 'missing')
-        if clean_type == 'missing':
-            lines.append("result = df.isnull().sum()")
-            lines.append("result = result[result > 0]")
-            lines.append("if len(result) == 0: result = 'Aucune valeur manquante'")
-        elif clean_type == 'duplicate':
-            lines.append("result = df.duplicated().sum()")
-            lines.append("result = f'{result} doublons trouvés'")
-        else:
-            lines.append(f"result = df['{cols[0]}'].describe()")
+    elif intention == "nettoyage":
+        if "isnull" in plan['method']:
+            code_lines.append("result = df.isnull().sum()")
+        elif "duplicated" in plan['method']:
+            code_lines.append("result = df.duplicated().sum()")
+        elif "IQR" in plan['method']:
+            num_col = df.select_dtypes(include=[np.number]).columns[0]
+            code_lines.append(f"Q1 = df['{num_col}'].quantile(0.25)")
+            code_lines.append(f"Q3 = df['{num_col}'].quantile(0.75)")
+            code_lines.append(f"IQR = Q3 - Q1")
+            code_lines.append(f"outliers = df[(df['{num_col}'] < Q1 - 1.5*IQR) | (df['{num_col}'] > Q3 + 1.5*IQR)]")
+            code_lines.append("result = f\"{len(outliers)} outliers détectés\"")
     
-    else:  # exploration
-        lines.append("result = df.describe()")
+    elif intention == "exploration":
+        if "dtypes" in plan['method']:
+            code_lines.append("result = df.dtypes")
+        elif "describe" in plan['method']:
+            code_lines.append("result = df.describe(include='all').transpose()")
+        elif "corr" in plan['method']:
+            num_df = "df.select_dtypes(include=[np.number])"
+            code_lines.append(f"corr_matrix = {num_df}.corr()")
+            code_lines.append("fig = px.imshow(corr_matrix, text_auto=True, aspect='auto', title='Matrice de corrélation')")
+            code_lines.append("st.plotly_chart(fig, use_container_width=True)")
+            code_lines.append("result = corr_matrix")
     
-    return "\n".join(lines)
+    else:
+        code_lines.append("result = df.head(10)")
+    
+    return "\n".join(code_lines)
+
+def execute_code_safe(code, df):
+    """Exécute le code généré en toute sécurité"""
+    local_vars = {
+        'df': df.copy(),
+        'pd': pd,
+        'np': np,
+        'st': st
+    }
+    
+    try:
+        exec(code, {"__builtins__": {}}, local_vars)
+        result = local_vars.get('result', None)
+        fig = local_vars.get('fig', None)
+        return result, fig
+    except Exception as e:
+        raise Exception(f"Erreur d'exécution : {str(e)}\nCode :\n{code}")
 
 # ==================== INTERFACE ====================
 
