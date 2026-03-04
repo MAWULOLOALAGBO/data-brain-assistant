@@ -96,7 +96,7 @@ JSON :"""
                         "X-Title": "Data Brain Assistant"
                     },
                     json={
-                        "model": "mistralai/mistral-7b-instruct:free",
+                        "model": "google/gemma-2-9b-it:free",
                         "messages": [{"role": "user", "content": prompt}],
                         "temperature": 0
                     },
