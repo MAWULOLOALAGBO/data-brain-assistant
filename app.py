@@ -215,7 +215,7 @@ if st.session_state.data is not None:
                     code_lines.append(f"st.plotly_chart(fig, use_container_width=True)")
                     code_lines.append(f"result = 'Histogramme affiché'")
                     
-                elif 'scatter' in plan['action'] or 'nuage' in plan['action']:
+            elif 'scatter' in plan['action'] or 'nuage' in plan['action']:
                     if len(plan['colonnes_concernees']) >= 2:
                         col2 = plan['colonnes_concernees'][1]
                         code_lines.append(f"import plotly.express as px")
