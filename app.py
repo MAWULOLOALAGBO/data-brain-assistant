@@ -381,6 +381,7 @@ def generate_code(plan, df):
 
 def execute_code_safe(code, df):
     """Exécute le code avec tous les imports nécessaires"""
+    # Imports doivent être faits ici pour être disponibles dans local_vars
     import plotly.express as px
     import plotly.graph_objects as go
     
@@ -389,8 +390,8 @@ def execute_code_safe(code, df):
         'pd': pd,
         'np': np,
         'st': st,
-        'px': px,
-        'go': go
+        'px': px,  # ESSENTIEL pour les visualisations
+        'go': go   # ESSENTIEL pour les graphiques avancés
     }
     
     try:
