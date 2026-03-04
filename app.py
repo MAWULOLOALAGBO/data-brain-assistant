@@ -5,9 +5,13 @@ import re
 
 st.set_page_config(page_title="Data Brain Assistant", layout="wide")
 
+# Initialisation session state (OBLIGATOIRE en premier)
 if 'data' not in st.session_state:
     st.session_state.data = None
+if 'history' not in st.session_state:
     st.session_state.history = []
+if 'plan' not in st.session_state:
+    st.session_state.plan = None
 
 st.title("🧠 Data Brain Assistant")
 st.markdown("*Analyse intelligente sans API externe*")
@@ -261,9 +265,9 @@ if st.session_state.data is not None:
                 st.error(f"❌ Erreur d'exécution : {e}")
                 st.info("💡 Essayez de reformuler votre question")
 
-        # Historique
-        if st.session_state.history:
-            with st.sidebar:
-                st.header("📜 Historique")
-                for i, item in enumerate(st.session_state.history[-5:]):
-                    st.write(f"{i+1}. {item['query'][:30]}...")
+# Historique
+if st.session_state.history:
+    with st.sidebar:
+        st.header("📜 Historique")
+        for i, item in enumerate(st.session_state.history[-5:]):
+            st.write(f"{i+1}. {item['query'][:30]}...")
