@@ -261,9 +261,9 @@ if st.session_state.data is not None:
                 st.error(f"❌ Erreur d'exécution : {e}")
                 st.info("💡 Essayez de reformuler votre question")
 
-    # Historique
-    if st.session_state.history:
-        with st.sidebar:
-            st.header("📜 Historique")
-            for i, item in enumerate(st.session_state.history[-5:]):
-                st.write(f"{i+1}. {item['query'][:30]}...")
+        # Historique
+        if st.session_state.history:
+            with st.sidebar:
+                st.header("📜 Historique")
+                for i, item in enumerate(st.session_state.history[-5:]):
+                    st.write(f"{i+1}. {item['query'][:30]}...")
