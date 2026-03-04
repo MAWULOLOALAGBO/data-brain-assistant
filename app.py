@@ -1,64 +1,129 @@
 import streamlit as st
 import pandas as pd
 import json
+import openai
 
 st.set_page_config(page_title="Data Brain Assistant", layout="wide")
 
-st.title("🧠 Data Brain Assistant")
-st.markdown("*Chargez n'importe quel fichier pour commencer*")
+# Initialisation
+if 'data' not in st.session_state:
+    st.session_state.data = None
 
-# Upload
-uploaded_file = st.file_uploader(
-    "Déposez votre fichier", 
-    type=['csv', 'xlsx', 'xls', 'json']
-)
+st.title("🧠 Data Brain Assistant")
+
+# Sidebar pour la clé API
+with st.sidebar:
+    st.header("⚙️ Configuration")
+    api_key = st.text_input("Clé API OpenAI", type="password")
+    if api_key:
+        openai.api_key = api_key
+        st.success("✅ Connecté")
+    else:
+        st.warning("Entrez votre clé API pour continuer")
+
+# Upload fichier
+st.header("1. Chargez votre fichier")
+uploaded_file = st.file_uploader("CSV, Excel ou JSON", type=['csv', 'xlsx', 'xls', 'json'])
 
 if uploaded_file:
-    # Détection du format
-    file_name = uploaded_file.name
-    st.write(f"📁 Fichier détecté : `{file_name}`")
-    
+    # Chargement (même code qu'avant)
     try:
-        # Chargement selon l'extension
-        if file_name.endswith('.csv'):
+        if uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
-            st.success("✅ CSV chargé")
-            
-        elif file_name.endswith(('.xlsx', '.xls')):
+        elif uploaded_file.name.endswith(('.xlsx', '.xls')):
             df = pd.read_excel(uploaded_file)
-            st.success("✅ Excel chargé")
-            
-        elif file_name.endswith('.json'):
-            # Essai JSON normal
+        elif uploaded_file.name.endswith('.json'):
             try:
                 df = pd.read_json(uploaded_file)
             except:
-                # Essai JSON lignes (JSONL)
                 uploaded_file.seek(0)
                 data = [json.loads(line) for line in uploaded_file]
                 df = pd.DataFrame(data)
-            st.success("✅ JSON chargé")
         
-        # Affichage des métadonnées
-        st.subheader("📊 Informations du fichier")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Lignes", df.shape[0])
-        col2.metric("Colonnes", df.shape[1])
-        col3.metric("Taille mémoire", f"{df.memory_usage(deep=True).sum() / 1024:.1f} KB")
+        st.session_state.data = df
         
-        # Aperçu
-        st.subheader("👁️ Aperçu (5 premières lignes)")
-        st.dataframe(df.head())
+        # Infos
+        st.success(f"✅ {df.shape[0]} lignes × {df.shape[1]} colonnes")
         
-        # Liste des colonnes
-        st.subheader("📋 Colonnes détectées")
-        for col in df.columns:
-            st.write(f"- **{col}** : {df[col].dtype}")
+        with st.expander("Voir les données"):
+            st.dataframe(df.head())
+            st.write("**Colonnes :**", list(df.columns))
             
-        # Stockage pour étapes futures
-        st.session_state['data'] = df
-        st.session_state['file_name'] = file_name
-        
     except Exception as e:
-        st.error(f"❌ Erreur de chargement : {str(e)}")
-        st.info("💡 Vérifiez que le fichier n'est pas corrompu")
+        st.error(f"Erreur : {e}")
+
+# Requête utilisateur
+if st.session_state.data is not None and api_key:
+    st.header("2. Posez votre question")
+    
+    query = st.text_input(
+        "Exemple : 'Quel est le prix moyen ?' ou 'Histogramme des quantités'",
+        placeholder="Votre question ici..."
+    )
+    
+    if query:
+        with st.spinner("🧠 Analyse de la requête..."):
+            # Préparation du contexte
+            df = st.session_state.data
+            context = {
+                "colonnes": list(df.columns),
+                "types": {col: str(df[col].dtype) for col in df.columns},
+                "exemple": df.head(2).to_dict()
+            }
+            
+            # Prompt GPT
+            prompt = f"""Tu es un assistant d'analyse de données. 
+            
+Contexte du fichier :
+{json.dumps(context, indent=2)}
+
+Requête utilisateur : "{query}"
+
+Analyse cette requête et réponds UNIQUEMENT avec ce JSON :
+{{
+    "intention": "statistique|visualisation|nettoyage|prediction|exploration|inconnu",
+    "action": "description de ce qu'il faut faire",
+    "colonnes_concernees": ["colonne1", "colonne2"],
+    "methode": "méthode technique",
+    "explication": "explication simple pour l'utilisateur"
+}}
+
+JSON :"""
+            
+            try:
+                response = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0
+                )
+                
+                # Extraction JSON
+                content = response.choices[0].message.content
+                
+                # Nettoyage si markdown
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0]
+                elif "```" in content:
+                    content = content.split("```")[1].split("```")[0]
+                
+                plan = json.loads(content.strip())
+                
+                # Affichage du plan
+                st.subheader("📋 Plan d'action compris")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**Intention :** {plan['intention']}")
+                    st.write(f"**Action :** {plan['action']}")
+                with col2:
+                    st.write(f"**Colonnes :** {', '.join(plan['colonnes_concernees'])}")
+                    st.write(f"**Méthode :** {plan['methode']}")
+                
+                st.info(f"💡 {plan['explication']}")
+                
+                st.session_state['plan'] = plan
+                st.success("✅ Requête comprise (exécution à l'étape suivante)")
+                
+            except Exception as e:
+                st.error(f"Erreur GPT : {e}")
+                st.code(content if 'content' in locals() else "Pas de réponse")
