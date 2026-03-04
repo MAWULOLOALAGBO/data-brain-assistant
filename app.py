@@ -380,22 +380,38 @@ def generate_code(plan, df):
     return "\n".join(code_lines)
 
 def execute_code_safe(code, df):
-    """Exécute le code avec tous les imports nécessaires"""
-    # Imports doivent être faits ici pour être disponibles dans local_vars
-    import plotly.express as px
-    import plotly.graph_objects as go
+    """Exécute le code en autorisant les imports nécessaires"""
+    
+    # Builtins minimaux pour faire fonctionner le code
+    safe_builtins = {
+        '__import__': __import__,  # AUTORISE les imports
+        'len': len,
+        'range': range,
+        'enumerate': enumerate,
+        'zip': zip,
+        'str': str,
+        'int': int,
+        'float': float,
+        'list': list,
+        'dict': dict,
+        'tuple': tuple,
+        'set': set,
+        'type': type,
+        'isinstance': isinstance,
+        'hasattr': hasattr,
+        'getattr': getattr,
+        'print': print,  # Pour debug
+    }
     
     local_vars = {
         'df': df.copy(),
         'pd': pd,
         'np': np,
         'st': st,
-        'px': px,  # ESSENTIEL pour les visualisations
-        'go': go   # ESSENTIEL pour les graphiques avancés
     }
     
     try:
-        exec(code, {"__builtins__": {}}, local_vars)
+        exec(code, {"__builtins__": safe_builtins}, local_vars)
         result = local_vars.get('result', None)
         fig = local_vars.get('fig', None)
         return result, fig
