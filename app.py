@@ -210,40 +210,26 @@ if st.session_state.data is not None:
                 col = plan['colonnes_concernees'][0] if plan['colonnes_concernees'][0] != 'toutes' else df.columns[0]
                 
                 if 'histogramme' in plan['action']:
-                    code_lines.append(f"import plotly.express as px")
+                    code_lines.append("import plotly.express as px")
                     code_lines.append(f"fig = px.histogram(df, x='{col}', title='Distribution de {col}')")
-                    code_lines.append(f"st.plotly_chart(fig, use_container_width=True)")
-                    code_lines.append(f"result = 'Histogramme affiché'")
+                    code_lines.append("st.plotly_chart(fig, use_container_width=True)")
+                    code_lines.append("result = 'Histogramme affiché'")
                     
-            elif 'scatter' in plan['action'] or 'nuage' in plan['action']:
-                    if len(plan['colonnes_concernees']) >= 2:
-                        col2 = plan['colonnes_concernees'][1]
-                        code_lines.append(f"import plotly.express as px")
-                        code_lines.append(f"fig = px.scatter(df, x='{col}', y='{col2}', title='{col} vs {col2}')")
-                        code_lines.append(f"st.plotly_chart(fig, use_container_width=True)")
-                        code_lines.append(f"result = 'Nuage de points affiché'")
-                    else:
-                        code_lines.append(f"result = 'Besoin de 2 colonnes pour un scatter plot'")
-                        
-                else:  # line plot par défaut
-                    code_lines.append(f"import plotly.express as px")
-                    code_lines.append(f"fig = px.line(df, y='{col}', title='Évolution de {col}')")
-                    code_lines.append(f"st.plotly_chart(fig, use_container_width=True)")
-                    code_lines.append(f"result = 'Graphique affiché'")
                 elif 'scatter' in plan['action'] or 'nuage' in plan['action']:
                     if len(plan['colonnes_concernees']) >= 2:
                         col2 = plan['colonnes_concernees'][1]
-                        code_lines.append(f"import plotly.express as px")
+                        code_lines.append("import plotly.express as px")
                         code_lines.append(f"fig = px.scatter(df, x='{col}', y='{col2}', title='{col} vs {col2}')")
-                        code_lines.append(f"fig.show()")
-                        code_lines.append(f"result = 'Nuage de points généré'")
+                        code_lines.append("st.plotly_chart(fig, use_container_width=True)")
+                        code_lines.append("result = 'Nuage de points affiché'")
                     else:
-                        code_lines.append(f"result = 'Besoin de 2 colonnes pour un scatter plot'")
+                        code_lines.append("result = 'Besoin de 2 colonnes pour un scatter plot'")
+                        
                 else:
-                    code_lines.append(f"import plotly.express as px")
+                    code_lines.append("import plotly.express as px")
                     code_lines.append(f"fig = px.line(df, y='{col}', title='Évolution de {col}')")
-                    code_lines.append(f"fig.show()")
-                    code_lines.append(f"result = 'Graphique généré'")
+                    code_lines.append("st.plotly_chart(fig, use_container_width=True)")
+                    code_lines.append("result = 'Graphique affiché'")
             
             # Affichage du code
             code_python = "\n".join(code_lines)
