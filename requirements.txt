@@ -1,5 +1,6 @@
 streamlit
 pandas
+numpy
 openpyxl
 plotly
-numpy
+pyarrow  # pour parquet
