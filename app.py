@@ -246,6 +246,7 @@ def generate_code(plan, df):
     # Import conditionnel
     if intention == "visualisation":
         code_lines.append("import plotly.express as px")
+        code_lines.append("import time")  # Pour les keys uniques
     
     # Fonction helper pour obtenir colonnes numériques
     code_lines.append("# Détection automatique des types")
@@ -285,22 +286,20 @@ def generate_code(plan, df):
             code_lines.append(f"target = '{col}' if '{col}' in df.columns else (num_cols[0] if num_cols else df.columns[0])")
             code_lines.append("if target in num_cols:")
             code_lines.append("    fig = px.histogram(df, x=target, title=f'Distribution de {target}')")
-            import time
-            unique_id = str(time.time())[-6:]  # 6 derniers chiffres du timestamp
-            code_lines.append(f"st.plotly_chart(fig, use_container_width=True, key='viz_{unique_id}')")
+            code_lines.append("    unique_key = f'viz_{int(time.time()*1000) % 1000000}'")  # Généré DANS le code
+            code_lines.append("    st.plotly_chart(fig, use_container_width=True, key=unique_key)")
             code_lines.append("    result = f'Histogramme de {target}'")
             code_lines.append("else:")
             code_lines.append("    result = f'{target} n\\'est pas numérique, histogramme impossible'")
             
         elif "bar" in plan['method']:
             if groupby:
-                agg_col = "num_cols[0] if num_cols else None"
-                code_lines.append(f"agg_col = '{cols[1]}' if len(['{col}']) > 1 and '{cols[1]}' in num_cols else {agg_col}")
+                code_lines.append(f"agg_col = '{cols[1]}' if len({cols}) > 1 and '{cols[1]}' in num_cols else (num_cols[0] if num_cols else None)")
                 code_lines.append("if agg_col:")
                 code_lines.append(f"    agg_df = df.groupby('{groupby}')[agg_col].sum().reset_index().sort_values(agg_col, ascending=False).head(20)")
                 code_lines.append("    fig = px.bar(agg_df, x=groupby, y=agg_col, title=f'Total par {groupby}')")
-                unique_id = str(time.time())[-6:]  # 6 derniers chiffres du timestamp
-                code_lines.append(f"st.plotly_chart(fig, use_container_width=True, key='viz_{unique_id}')")
+                code_lines.append("    unique_key = f'viz_{int(time.time()*1000) % 1000000}'")
+                code_lines.append("    st.plotly_chart(fig, use_container_width=True, key=unique_key)")
                 code_lines.append("    result = agg_df")
                 code_lines.append("else:")
                 code_lines.append("    result = 'Pas de colonne numérique pour le diagramme en barres'")
@@ -309,8 +308,8 @@ def generate_code(plan, df):
                 code_lines.append(f"    value_counts = df['{col}'].value_counts().head(15).reset_index()")
                 code_lines.append(f"    value_counts.columns = ['{col}', 'count']")
                 code_lines.append(f"    fig = px.bar(value_counts, x='{col}', y='count', title='Top 15 {col}')")
-                unique_id = str(time.time())[-6:]  # 6 derniers chiffres du timestamp
-                code_lines.append(f"st.plotly_chart(fig, use_container_width=True, key='viz_{unique_id}')")
+                code_lines.append("    unique_key = f'viz_{int(time.time()*1000) % 1000000}'")
+                code_lines.append("    st.plotly_chart(fig, use_container_width=True, key=unique_key)")
                 code_lines.append("    result = value_counts")
                 code_lines.append("else:")
                 code_lines.append(f"    result = '{col} n\\'est pas catégoriel'")
@@ -318,11 +317,12 @@ def generate_code(plan, df):
         elif "scatter" in plan['method']:
             code_lines.append("if len(num_cols) >= 2:")
             code_lines.append(f"    x_col = '{cols[0]}' if '{cols[0]}' in num_cols else num_cols[0]")
-            code_lines.append(f"    y_col = '{cols[1]}' if len(['{cols[0]}']) > 1 and '{cols[1]}' in num_cols else num_cols[1]")
+            y_col = cols[1] if len(cols) > 1 else "num_cols[1] if len(num_cols) > 1 else num_cols[0]"
+            code_lines.append(f"    y_col = '{cols[1]}' if len(['{cols[0]}']) > 1 and '{cols[1]}' in num_cols else {y_col}")
             color_code = f", color='{groupby}'" if groupby else ""
             code_lines.append(f"    fig = px.scatter(df, x=x_col, y=y_col{color_code}, title=f'{{x_col}} vs {{y_col}}')")
-            unique_id = str(time.time())[-6:]  # 6 derniers chiffres du timestamp
-            code_lines.append(f"st.plotly_chart(fig, use_container_width=True, key='viz_{unique_id}')")
+            code_lines.append("    unique_key = f'viz_{int(time.time()*1000) % 1000000}'")
+            code_lines.append("    st.plotly_chart(fig, use_container_width=True, key=unique_key)")
             code_lines.append("    result = f'Scatter: {{x_col}} vs {{y_col}}'")
             code_lines.append("else:")
             code_lines.append("    result = 'Besoin de 2 colonnes numériques'")
@@ -332,8 +332,8 @@ def generate_code(plan, df):
             code_lines.append(f"    value_counts = df['{col}'].value_counts().head(10).reset_index()")
             code_lines.append(f"    value_counts.columns = ['{col}', 'count']")
             code_lines.append(f"    fig = px.pie(value_counts, values='count', names='{col}', title='Répartition {col}')")
-            unique_id = str(time.time())[-6:]  # 6 derniers chiffres du timestamp
-            code_lines.append(f"st.plotly_chart(fig, use_container_width=True, key='viz_{unique_id}')")
+            code_lines.append("    unique_key = f'viz_{int(time.time()*1000) % 1000000}'")
+            code_lines.append("    st.plotly_chart(fig, use_container_width=True, key=unique_key)")
             code_lines.append("    result = value_counts")
             code_lines.append("else:")
             code_lines.append(f"    result = '{col} n\\'est pas catégoriel'")
@@ -342,8 +342,8 @@ def generate_code(plan, df):
             code_lines.append("if num_cols:")
             code_lines.append(f"    y_col = '{col}' if '{col}' in num_cols else num_cols[0]")
             code_lines.append("    fig = px.line(df, y=y_col, title=f'Évolution de {y_col}')")
-            unique_id = str(time.time())[-6:]  # 6 derniers chiffres du timestamp
-            code_lines.append(f"st.plotly_chart(fig, use_container_width=True, key='viz_{unique_id}')")
+            code_lines.append("    unique_key = f'viz_{int(time.time()*1000) % 1000000}'")
+            code_lines.append("    st.plotly_chart(fig, use_container_width=True, key=unique_key)")
             code_lines.append("    result = f'Graphique linéaire de {y_col}'")
             code_lines.append("else:")
             code_lines.append("    result = 'Pas de colonne numérique'")
@@ -377,7 +377,8 @@ def generate_code(plan, df):
             code_lines.append("if len(num_cols) > 1:")
             code_lines.append("    corr_matrix = df[num_cols].corr()")
             code_lines.append("    fig = px.imshow(corr_matrix, text_auto='.2f', aspect='auto', title='Matrice de corrélation')")
-            code_lines.append("    st.plotly_chart(fig, use_container_width=True)")
+            code_lines.append("    unique_key = f'viz_{int(time.time()*1000) % 1000000}'")
+            code_lines.append("    st.plotly_chart(fig, use_container_width=True, key=unique_key)")
             code_lines.append("    result = corr_matrix")
             code_lines.append("else:")
             code_lines.append("    result = 'Besoin de 2+ colonnes numériques'")
