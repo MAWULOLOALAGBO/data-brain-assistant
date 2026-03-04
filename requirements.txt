@@ -1,6 +1,7 @@
-streamlit
-pandas
-numpy
-openpyxl
-plotly
-pyarrow  # pour parquet
+streamlit>=1.28.0
+pandas>=2.0.0
+numpy>=1.24.0
+plotly>=5.15.0
+openpyxl>=3.1.0
+pyarrow>=12.0.0
+pytest>=7.4.0
