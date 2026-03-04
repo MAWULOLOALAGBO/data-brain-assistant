@@ -237,118 +237,160 @@ def parse_query_v2(query, df):
     return plan
 
 def generate_code(plan, df):
-    """Génère le code Python selon le plan"""
+    """Génère du code Python robuste et universel"""
     code_lines = []
     intention = plan['intention']
     cols = plan['target_columns']
     groupby = plan.get('groupby')
     
-    # Import commun
+    # Import conditionnel
     if intention == "visualisation":
         code_lines.append("import plotly.express as px")
-        code_lines.append("import plotly.graph_objects as go")
     
-    # Construction du code selon intention
+    # Fonction helper pour obtenir colonnes numériques
+    code_lines.append("# Détection automatique des types")
+    code_lines.append("num_cols = df.select_dtypes(include=['number']).columns.tolist()")
+    code_lines.append("cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()")
+    
     if intention == "statistique":
-        if cols[0] != "toutes" and len(cols) == 1:
-            col = cols[0]
+        target_col = cols[0] if cols[0] != "toutes" else "num_cols[0] if num_cols else df.columns[0]"
+        
+        if target_col != "num_cols[0] if num_cols else df.columns[0]":
+            # Colonne spécifique
             if groupby:
-                code_lines.append(f"result = df.groupby('{groupby}')['{col}'].{plan['method'].replace('()', '')}().reset_index()")
-                code_lines.append(f"result.columns = ['{groupby}', '{plan['method'].replace('()', '')}_{col}']")
+                code_lines.append(f"if '{target_col}' in num_cols:")
+                code_lines.append(f"    result = df.groupby('{groupby}')['{target_col}'].agg(['mean', 'sum', 'count', 'min', 'max']).reset_index()")
+                code_lines.append(f"    result = result.rename(columns={{'mean': 'moyenne_{target_col}', 'sum': 'total_{target_col}'}})")
+                code_lines.append("else:")
+                code_lines.append(f"    result = 'Erreur: {target_col} n\\'est pas numérique'")
             else:
-                code_lines.append(f"result = df['{col}'].{plan['method'].replace('()', '')}()")
+                code_lines.append(f"if '{target_col}' in num_cols:")
+                code_lines.append(f"    result = df['{target_col}'].agg(['mean', 'std', 'min', 'max', 'median'])")
+                code_lines.append("else:")
+                code_lines.append(f"    result = df['{target_col}'].describe() if '{target_col}' in cat_cols else 'Colonne non trouvée'")
         else:
+            # Toutes les colonnes numériques
             if groupby:
-                code_lines.append(f"result = df.groupby('{groupby}').{plan['method'].replace('()', '')}()")
+                code_lines.append(f"if '{groupby}' in cat_cols and num_cols:")
+                code_lines.append(f"    result = df.groupby('{groupby}')[num_cols].mean().reset_index()")
+                code_lines.append("else:")
+                code_lines.append("    result = 'Groupby impossible: vérifiez les types'")
             else:
-                code_lines.append(f"result = df.{plan['method'].replace('()', '')}()")
+                code_lines.append("result = df[num_cols].describe() if num_cols else 'Aucune colonne numérique'")
     
     elif intention == "visualisation":
-        col = cols[0] if cols[0] != "toutes" else df.select_dtypes(include=[np.number]).columns[0]
+        col = cols[0] if cols[0] != "toutes" else "num_cols[0] if num_cols else df.columns[0]"
         
         if "histogram" in plan['method']:
-            code_lines.append(f"fig = px.histogram(df, x='{col}', title='Distribution de {col}')")
-            code_lines.append("st.plotly_chart(fig, use_container_width=True)")
-            code_lines.append("result = 'Histogramme affiché'")
+            code_lines.append(f"target = '{col}' if '{col}' in df.columns else (num_cols[0] if num_cols else df.columns[0])")
+            code_lines.append("if target in num_cols:")
+            code_lines.append("    fig = px.histogram(df, x=target, title=f'Distribution de {target}')")
+            code_lines.append("    st.plotly_chart(fig, use_container_width=True)")
+            code_lines.append("    result = f'Histogramme de {target}'")
+            code_lines.append("else:")
+            code_lines.append("    result = f'{target} n\\'est pas numérique, histogramme impossible'")
             
         elif "bar" in plan['method']:
             if groupby:
-                agg_col = df.select_dtypes(include=[np.number]).columns[0]
-                code_lines.append(f"agg_df = df.groupby('{groupby}')['{agg_col}'].sum().reset_index()")
-                code_lines.append(f"fig = px.bar(agg_df, x='{groupby}', y='{agg_col}', title='{agg_col} par {groupby}')")
+                agg_col = "num_cols[0] if num_cols else None"
+                code_lines.append(f"agg_col = '{cols[1]}' if len(['{col}']) > 1 and '{cols[1]}' in num_cols else {agg_col}")
+                code_lines.append("if agg_col:")
+                code_lines.append(f"    agg_df = df.groupby('{groupby}')[agg_col].sum().reset_index().sort_values(agg_col, ascending=False).head(20)")
+                code_lines.append("    fig = px.bar(agg_df, x=groupby, y=agg_col, title=f'Total par {groupby}')")
+                code_lines.append("    st.plotly_chart(fig, use_container_width=True)")
+                code_lines.append("    result = agg_df")
+                code_lines.append("else:")
+                code_lines.append("    result = 'Pas de colonne numérique pour le diagramme en barres'")
             else:
-                code_lines.append(f"value_counts = df['{col}'].value_counts().head(20).reset_index()")
-                code_lines.append(f"value_counts.columns = ['{col}', 'count']")
-                code_lines.append(f"fig = px.bar(value_counts, x='{col}', y='count', title='Top 20 {col}')")
-            code_lines.append("st.plotly_chart(fig, use_container_width=True)")
-            code_lines.append("result = 'Diagramme en barres affiché'")
-            
-        elif "pie" in plan['method']:
-            code_lines.append(f"value_counts = df['{col}'].value_counts().head(10).reset_index()")
-            code_lines.append(f"value_counts.columns = ['{col}', 'count']")
-            code_lines.append(f"fig = px.pie(value_counts, values='count', names='{col}', title='Répartition {col}')")
-            code_lines.append("st.plotly_chart(fig, use_container_width=True)")
-            code_lines.append("result = 'Camembert affiché'")
-            
+                code_lines.append(f"if '{col}' in cat_cols:")
+                code_lines.append(f"    value_counts = df['{col}'].value_counts().head(15).reset_index()")
+                code_lines.append(f"    value_counts.columns = ['{col}', 'count']")
+                code_lines.append(f"    fig = px.bar(value_counts, x='{col}', y='count', title='Top 15 {col}')")
+                code_lines.append("    st.plotly_chart(fig, use_container_width=True)")
+                code_lines.append("    result = value_counts")
+                code_lines.append("else:")
+                code_lines.append(f"    result = '{col} n\\'est pas catégoriel'")
+        
         elif "scatter" in plan['method']:
-            num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            if len(num_cols) >= 2:
-                x_col = cols[0] if cols[0] in num_cols else num_cols[0]
-                y_col = cols[1] if len(cols) > 1 and cols[1] in num_cols else num_cols[1] if len(num_cols) > 1 else num_cols[0]
-                color_col = f", color='{groupby}'" if groupby else ""
-                code_lines.append(f"fig = px.scatter(df, x='{x_col}', y='{y_col}'{color_col}, title='{x_col} vs {y_col}')")
-                code_lines.append("st.plotly_chart(fig, use_container_width=True)")
-                code_lines.append("result = 'Nuage de points affiché'")
-            else:
-                code_lines.append("result = 'Besoin de 2 colonnes numériques pour un scatter plot'")
-                
-        elif "line" in plan['method']:
-            if groupby:
-                num_col = df.select_dtypes(include=[np.number]).columns[0]
-                code_lines.append(f"agg_df = df.groupby('{groupby}')['{num_col}'].sum().reset_index()")
-                code_lines.append(f"fig = px.line(agg_df, x='{groupby}', y='{num_col}', title='Évolution par {groupby}')")
-            else:
-                code_lines.append(f"fig = px.line(df, y='{col}', title='Évolution de {col}')")
-            code_lines.append("st.plotly_chart(fig, use_container_width=True)")
-            code_lines.append("result = 'Graphique linéaire affiché'")
+            code_lines.append("if len(num_cols) >= 2:")
+            code_lines.append(f"    x_col = '{cols[0]}' if '{cols[0]}' in num_cols else num_cols[0]")
+            code_lines.append(f"    y_col = '{cols[1]}' if len(['{cols[0]}']) > 1 and '{cols[1]}' in num_cols else num_cols[1]")
+            color_code = f", color='{groupby}'" if groupby else ""
+            code_lines.append(f"    fig = px.scatter(df, x=x_col, y=y_col{color_code}, title=f'{{x_col}} vs {{y_col}}')")
+            code_lines.append("    st.plotly_chart(fig, use_container_width=True)")
+            code_lines.append("    result = f'Scatter: {{x_col}} vs {{y_col}}'")
+            code_lines.append("else:")
+            code_lines.append("    result = 'Besoin de 2 colonnes numériques'")
+        
+        elif "pie" in plan['method']:
+            code_lines.append(f"if '{col}' in cat_cols:")
+            code_lines.append(f"    value_counts = df['{col}'].value_counts().head(10).reset_index()")
+            code_lines.append(f"    value_counts.columns = ['{col}', 'count']")
+            code_lines.append(f"    fig = px.pie(value_counts, values='count', names='{col}', title='Répartition {col}')")
+            code_lines.append("    st.plotly_chart(fig, use_container_width=True)")
+            code_lines.append("    result = value_counts")
+            code_lines.append("else:")
+            code_lines.append(f"    result = '{col} n\\'est pas catégoriel'")
+        
+        else:  # line par défaut
+            code_lines.append("if num_cols:")
+            code_lines.append(f"    y_col = '{col}' if '{col}' in num_cols else num_cols[0]")
+            code_lines.append("    fig = px.line(df, y=y_col, title=f'Évolution de {y_col}')")
+            code_lines.append("    st.plotly_chart(fig, use_container_width=True)")
+            code_lines.append("    result = f'Graphique linéaire de {y_col}'")
+            code_lines.append("else:")
+            code_lines.append("    result = 'Pas de colonne numérique'")
     
     elif intention == "nettoyage":
         if "isnull" in plan['method']:
-            code_lines.append("result = df.isnull().sum()")
+            code_lines.append("result = df.isnull().sum().sort_values(ascending=False)")
+            code_lines.append("result = result[result > 0]")
+            code_lines.append("if result.empty:")
+            code_lines.append("    result = 'Aucune valeur manquante'")
         elif "duplicated" in plan['method']:
-            code_lines.append("result = df.duplicated().sum()")
+            code_lines.append("dup_count = df.duplicated().sum()")
+            code_lines.append("result = f'{dup_count} lignes dupliquées ({dup_count/len(df)*100:.1f}%)'")
         elif "IQR" in plan['method']:
-            num_col = df.select_dtypes(include=[np.number]).columns[0]
-            code_lines.append(f"Q1 = df['{num_col}'].quantile(0.25)")
-            code_lines.append(f"Q3 = df['{num_col}'].quantile(0.75)")
-            code_lines.append(f"IQR = Q3 - Q1")
-            code_lines.append(f"outliers = df[(df['{num_col}'] < Q1 - 1.5*IQR) | (df['{num_col}'] > Q3 + 1.5*IQR)]")
-            code_lines.append("result = f\"{len(outliers)} outliers détectés\"")
+            code_lines.append("if num_cols:")
+            code_lines.append("    col = num_cols[0]")
+            code_lines.append("    Q1 = df[col].quantile(0.25)")
+            code_lines.append("    Q3 = df[col].quantile(0.75)")
+            code_lines.append("    IQR = Q3 - Q1")
+            code_lines.append("    outliers = df[(df[col] < Q1 - 1.5*IQR) | (df[col] > Q3 + 1.5*IQR)]")
+            code_lines.append("    result = f'{len(outliers)} outliers sur {col} (IQR method)'")
+            code_lines.append("else:")
+            code_lines.append("    result = 'Pas de colonne numérique'")
     
     elif intention == "exploration":
         if "dtypes" in plan['method']:
-            code_lines.append("result = df.dtypes")
+            code_lines.append("result = pd.DataFrame({'Type': df.dtypes, 'Non_Null': df.count(), 'Null': df.isnull().sum(), 'Unique': df.nunique()})")
         elif "describe" in plan['method']:
             code_lines.append("result = df.describe(include='all').transpose()")
         elif "corr" in plan['method']:
-            num_df = "df.select_dtypes(include=[np.number])"
-            code_lines.append(f"corr_matrix = {num_df}.corr()")
-            code_lines.append("fig = px.imshow(corr_matrix, text_auto=True, aspect='auto', title='Matrice de corrélation')")
-            code_lines.append("st.plotly_chart(fig, use_container_width=True)")
-            code_lines.append("result = corr_matrix")
-    
+            code_lines.append("if len(num_cols) > 1:")
+            code_lines.append("    corr_matrix = df[num_cols].corr()")
+            code_lines.append("    fig = px.imshow(corr_matrix, text_auto='.2f', aspect='auto', title='Matrice de corrélation')")
+            code_lines.append("    st.plotly_chart(fig, use_container_width=True)")
+            code_lines.append("    result = corr_matrix")
+            code_lines.append("else:")
+            code_lines.append("    result = 'Besoin de 2+ colonnes numériques'")
     else:
         code_lines.append("result = df.head(10)")
     
     return "\n".join(code_lines)
 
 def execute_code_safe(code, df):
-    """Exécute le code généré en toute sécurité"""
+    """Exécute le code avec tous les imports nécessaires"""
+    import plotly.express as px
+    import plotly.graph_objects as go
+    
     local_vars = {
         'df': df.copy(),
         'pd': pd,
         'np': np,
-        'st': st
+        'st': st,
+        'px': px,
+        'go': go
     }
     
     try:
@@ -357,7 +399,7 @@ def execute_code_safe(code, df):
         fig = local_vars.get('fig', None)
         return result, fig
     except Exception as e:
-        raise Exception(f"Erreur d'exécution : {str(e)}\nCode :\n{code}")
+        raise Exception(f"Exécution: {str(e)}")
 
 # ==================== INTERFACE ====================
 
