@@ -115,7 +115,7 @@ class PlanValidator:
             needs_numeric = plan.action in [
                 ActionType.MOYENNE, ActionType.SOMME, ActionType.ECART_TYPE,
                 ActionType.VARIANCE, ActionType.MEDIANE, ActionType.MINIMUM,
-                ActionType.MAXIMUM, ActionType.CORRELATION, ActionType.REGRESSION
+                ActionType.MAXIMUM
             ]
             
             if needs_numeric and col not in self.numeric_columns:
@@ -124,426 +124,294 @@ class PlanValidator:
                     self.issues.append(ValidationResult(
                         level=ValidationLevel.ERROR,
                         code="COLONNE_NON_NUMERIQUE",
-                        message=f"La colonne '{col}' n'est pas numérique (type: {self.df[col].dtype})",
-                        suggestion=f"Convertissez la colonne en numérique ou choisissez une colonne numérique parmi: {', '.join(self.numeric_columns[:5])}"
+                        message=f"La colonne '{col}' est catégorielle, pas numérique",
+                        suggestion=f"Utilisez une colonne numérique comme: {', '.join(self.numeric_columns[:3])}"
+                    ))
+                elif col in self.datetime_columns:
+                    self.issues.append(ValidationResult(
+                        level=ValidationLevel.WARNING,
+                        code="COLONNE_DATETIME",
+                        message=f"La colonne '{col}' est une date. Conversion en timestamp pour le calcul",
+                        suggestion="Pour des stats sur les dates, utilisez 'describe' ou extrayez l'année/mois"
+                    ))
+            
+            # Vérifier les valeurs manquantes
+            null_ratio = self.df[col].isnull().mean()
+            if null_ratio > 0.5:
+                self.issues.append(ValidationResult(
+                    level=ValidationLevel.WARNING,
+                    code="TROP_DE_MANQUANTS",
+                    message=f"La colonne '{col}' contient {null_ratio*100:.1f}% de valeurs manquantes",
+                    suggestion="Envisagez de nettoyer les données d'abord avec 'valeurs manquantes'"
+                ))
+            
+            # Vérifier la variance (stats inutiles si constant)
+            if col in self.numeric_columns and self.df[col].nunique() == 1:
+                self.issues.append(ValidationResult(
+                    level=ValidationLevel.WARNING,
+                    code="COLONNE_CONSTANTE",
+                    message=f"La colonne '{col}' a une seule valeur unique ({self.df[col].iloc[0]})",
+                    suggestion="Les statistiques sur une colonne constante sont inutiles"
+                ))
+
+    def _validate_visualisation(self, plan: PlanAction):
+        """Validation pour les visualisations."""
+        if not plan.target_columns:
+            return
+        
+        col = plan.target_columns[0]
+        
+        # Histogramme : besoin de données numériques ou beaucoup de catégories
+        if plan.action == ActionType.HISTOGRAMME:
+            if col in self.categorical_columns:
+                n_unique = self.df[col].nunique()
+                if n_unique > 50:
+                    self.issues.append(ValidationResult(
+                        level=ValidationLevel.WARNING,
+                        code="TROP_DE_CATEGORIES_HIST",
+                        message=f"'{col}' a {n_unique} catégories, l'histogramme sera illisible",
+                        suggestion="Utilisez 'bar chart' ou filtrez les valeurs principales"
+                    ))
+        
+        # Scatter plot : besoin de 2 colonnes numériques
+        elif plan.action == ActionType.SCATTER_PLOT:
+            if len(plan.target_columns) < 2:
+                if len(self.numeric_columns) >= 2:
+                    self.issues.append(ValidationResult(
+                        level=ValidationLevel.INFO,
+                        code="SCATTER_COLONNE_UNIQUE",
+                        message=f"Une seule colonne spécifiée pour le scatter plot",
+                        suggestion=f"Utilisez '{self.numeric_columns[0]} et {self.numeric_columns[1]}' ou laissez l'auto-détection"
                     ))
                 else:
                     self.issues.append(ValidationResult(
                         level=ValidationLevel.ERROR,
-                        code="TYPE_INCOMPATIBLE",
-                        message=f"Type de données incompatible pour '{col}' ({self.df[col].dtype})",
-                        suggestion="Vérifiez le type de la colonne ou nettoyez les données"
+                        code="PAS_ASSEZ_NUMERIQUES_SCATTER",
+                        message=f"Scatter plot nécessite 2 colonnes numériques, vous en avez {len(self.numeric_columns)}",
+                        suggestion=f"Colonnes numériques disponibles: {', '.join(self.numeric_columns) if self.numeric_columns else 'Aucune'}"
                     ))
-            
-            # Vérifier les valeurs manquantes excessives
-            missing_ratio = self.df[col].isna().mean()
-            if missing_ratio > 0.5:
+        
+        # Pie chart : limité en catégories
+        elif plan.action == ActionType.PIE_CHART:
+            if col in self.numeric_columns:
                 self.issues.append(ValidationResult(
                     level=ValidationLevel.WARNING,
-                    code="TROP_DE_VALEURS_MANQUANTES",
-                    message=f"La colonne '{col}' contient {missing_ratio:.1%} de valeurs manquantes",
-                    suggestion="Envisagez de nettoyer la colonne avant l'analyse statistique"
+                    code="PIE_CHART_NUMERIQUE",
+                    message=f"'{col}' est numérique, le pie chart montre des proportions",
+                    suggestion=f"Utilisez une colonne catégorielle comme: {', '.join(self.categorical_columns[:3]) if self.categorical_columns else 'N/A'}"
                 ))
-            
-            # Vérifier la variance pour éviter division par zéro
-            if plan.action in [ActionType.ECART_TYPE, ActionType.VARIANCE, ActionType.CORRELATION]:
-                if col in self.numeric_columns and self.df[col].var() == 0:
+            elif col in self.categorical_columns:
+                n_unique = self.df[col].nunique()
+                if n_unique > 10:
                     self.issues.append(ValidationResult(
-                        level=ValidationLevel.ERROR,
-                        code="VARIANCE_NULLE",
-                        message=f"La colonne '{col}' a une variance nulle (toutes les valeurs identiques)",
-                        suggestion="Impossible de calculer l'écart-type ou la corrélation sur une constante"
+                        level=ValidationLevel.WARNING,
+                        code="TROP_DE_SEGMENTS_PIE",
+                        message=f"'{col}' a {n_unique} catégories, le pie chart sera illisible",
+                        suggestion="Limitez aux 10 plus fréquentes ou utilisez un bar chart"
                     ))
         
-        # Validation spécifique pour la corrélation (besoin de 2+ colonnes)
-        if plan.action == ActionType.CORRELATION and len(plan.target_columns) < 2:
-            self.issues.append(ValidationResult(
-                level=ValidationLevel.ERROR,
-                code="CORRELATION_COLONNES_INSUFFISANTES",
-                message="La corrélation nécessite au moins 2 colonnes numériques",
-                suggestion=f"Ajoutez une colonne parmi: {', '.join(self.numeric_columns[:5])}"
-            ))
+        # Line chart : besoin d'une dimension temporelle ou ordinale
+        elif plan.action == ActionType.LINE_CHART:
+            if col in self.categorical_columns and self.df[col].nunique() > 100:
+                self.issues.append(ValidationResult(
+                    level=ValidationLevel.WARNING,
+                    code="LINE_CHAOTIQUE",
+                    message=f"Trop de points pour un line chart avec '{col}' ({self.df[col].nunique()} valeurs)",
+                    suggestion="Agrégez les données ou utilisez un échantillon"
+                ))
         
-        # Validation pour la régression
-        if plan.action == ActionType.REGRESSION:
-            if len(plan.target_columns) < 2:
+        # Heatmap : besoin de corrélations
+        elif plan.action == ActionType.HEATMAP:
+            if len(self.numeric_columns) < 2:
                 self.issues.append(ValidationResult(
                     level=ValidationLevel.ERROR,
-                    code="REGRESSION_COLONNES_INSUFFISANTES",
-                    message="La régression nécessite au moins 2 colonnes (X et Y)",
-                    suggestion="Spécifiez les variables indépendantes et dépendantes"
+                    code="PAS_ASSEZ_NUMERIQUES_HEATMAP",
+                    message=f"Heatmap de corrélation nécessite 2+ colonnes numériques",
+                    suggestion=f"Vous n'avez que {len(self.numeric_columns)} colonne(s) numérique(s)"
                 ))
-    
-    def _validate_visualisation(self, plan: PlanAction):
-        """Validation pour les visualisations."""
-        if not plan.target_columns:
-            self.issues.append(ValidationResult(
-                level=ValidationLevel.WARNING,
-                code="AUCUNE_COLONNE_VISUALISATION",
-                message="Aucune colonne spécifiée pour la visualisation",
-                suggestion="Précisez quelles colonnes visualiser"
-            ))
-            return
-        
-        for col in plan.target_columns:
-            # Vérifier le nombre de catégories uniques pour les graphiques catégoriels
-            if plan.action in [ActionType.HISTOGRAMME, ActionType.BAR_CHART, ActionType.PIE_CHART]:
-                n_unique = self.df[col].nunique(dropna=True)
-                
-                if n_unique > 50:
-                    self.issues.append(ValidationResult(
-                        level=ValidationLevel.WARNING,
-                        code="TROP_DE_CATEGORIES",
-                        message=f"La colonne '{col}' a {n_unique} catégories uniques",
-                        suggestion="Envisagez de regrouper les catégories ou utilisez un autre type de graphique"
-                    ))
-                
-                if n_unique == 1:
-                    self.issues.append(ValidationResult(
-                        level=ValidationLevel.WARNING,
-                        code="UNE_SEULE_CATEGORIE",
-                        message=f"La colonne '{col}' n'a qu'une seule valeur unique",
-                        suggestion="Le graphique sera peu informatif avec une seule catégorie"
-                    ))
-            
-            # Vérifier pour les séries temporelles
-            if plan.action == ActionType.LINE_CHART:
-                if col not in self.datetime_columns and not pd.api.types.is_datetime64_any_dtype(self.df[col]):
-                    # Vérifier si on peut parser comme date
-                    try:
-                        pd.to_datetime(self.df[col].dropna().iloc[:5])
-                        self.issues.append(ValidationResult(
-                            level=ValidationLevel.INFO,
-                            code="CONVERSION_DATE_POSSIBLE",
-                            message=f"La colonne '{col}' pourrait être convertie en datetime",
-                            suggestion="La conversion automatique sera tentée pour le line chart"
-                        ))
-                    except (ValueError, TypeError):
-                        self.issues.append(ValidationResult(
-                            level=ValidationLevel.WARNING,
-                            code="PAS_DE_DIMENSION_TEMPS",
-                            message=f"La colonne '{col}' ne semble pas être une série temporelle",
-                            suggestion="Utilisez une colonne de type date pour un line chart pertinent"
-                        ))
-            
-            # Vérifier la taille pour les scatter plots
-            if plan.action == ActionType.SCATTER_PLOT:
-                if len(self.df) > 10000:
-                    self.issues.append(ValidationResult(
-                        level=ValidationLevel.WARNING,
-                        code="DATASET_TRES_GRAND",
-                        message=f"Dataset très grand ({len(self.df):,} lignes) pour un scatter plot",
-                        suggestion="Envisagez d'échantillonner les données ou utiliser un hexbin plot"
-                    ))
-                
-                if len(plan.target_columns) < 2:
-                    self.issues.append(ValidationResult(
-                        level=ValidationLevel.ERROR,
-                        code="SCATTER_BESOIN_2_COLONNES",
-                        message="Le scatter plot nécessite 2 colonnes numériques",
-                        suggestion="Spécifiez X et Y pour le scatter plot"
-                    ))
-    
+
     def _validate_nettoyage(self, plan: PlanAction):
-        """Validation pour les opérations de nettoyage."""
-        if not plan.target_columns and plan.action != ActionType.NETTOYAGE_GLOBAL:
-            self.issues.append(ValidationResult(
-                level=ValidationLevel.ERROR,
-                code="COLONNES_NETTOYAGE_REQUISES",
-                message="Spécifiez les colonnes à nettoyer",
-                suggestion="Ajoutez les colonnes cibles ou utilisez 'nettoyer tout'"
-            ))
-            return
+        """Validation pour le nettoyage de données."""
+        # Toujours faisable, mais on vérifie s'il y a quelque chose à nettoyer
         
-        for col in plan.target_columns:
-            # Vérifier les valeurs manquantes avant suppression
-            if plan.action == ActionType.SUPPRIMER_LIGNES_VIDES:
-                missing_count = self.df[col].isna().sum()
-                if missing_count == 0:
-                    self.issues.append(ValidationResult(
-                        level=ValidationLevel.INFO,
-                        code="AUCUNE_VALEUR_MANQUANTE",
-                        message=f"La colonne '{col}' n'a pas de valeurs manquantes",
-                        suggestion="Aucune action nécessaire sur cette colonne"
-                    ))
-                elif missing_count / len(self.df) > 0.3:
-                    self.issues.append(ValidationResult(
-                        level=ValidationLevel.WARNING,
-                        code="RISQUE_PERTE_DONNEES",
-                        message=f"Supprimer les lignes vides de '{col}' éliminera {missing_count:,} lignes ({missing_count/len(self.df):.1%})",
-                        suggestion="Envisagez plutôt l'imputation ou la suppression de la colonne"
-                    ))
-            
-            # Vérifier les doublons
-            if plan.action == ActionType.SUPPRIMER_DOUBLONS:
-                n_duplicates = self.df.duplicated(subset=[col]).sum()
-                if n_duplicates == 0:
-                    self.issues.append(ValidationResult(
-                        level=ValidationLevel.INFO,
-                        code="AUCUN_DOUBLON",
-                        message=f"Aucun doublon trouvé dans '{col}'",
-                        suggestion="Pas d'action nécessaire"
-                    ))
-            
-            # Vérifier les outliers
-            if plan.action == ActionType.DETECTER_OUTLIERS:
-                if col not in self.numeric_columns:
-                    self.issues.append(ValidationResult(
-                        level=ValidationLevel.ERROR,
-                        code="OUTLIERS_NON_NUMERIQUE",
-                        message=f"La détection d'outliers nécessite une colonne numérique, '{col}' est {self.df[col].dtype}",
-                        suggestion=f"Choisissez une colonne numérique parmi: {', '.join(self.numeric_columns[:5])}"
-                    ))
-    
-    def _validate_exploration(self, plan: PlanAction):
-        """Validation pour l'exploration de données."""
-        # Généralement peu de contraintes, mais on peut ajouter des suggestions
-        
-        if plan.action == ActionType.DESCRIBE:
-            if len(plan.target_columns) > 10:
+        if plan.action == ActionType.DETECTER_MANQUANTS:
+            total_null = self.df.isnull().sum().sum()
+            if total_null == 0:
                 self.issues.append(ValidationResult(
                     level=ValidationLevel.INFO,
-                    code="MANY_COLUMNS_DESCRIBE",
-                    message=f"Description de {len(plan.target_columns)} colonnes demandée",
-                    suggestion="Envisagez de filtrer les colonnes pour une analyse plus ciblée"
+                    code="AUCUN_MANQUANT",
+                    message="Aucune valeur manquante détectée dans le dataset",
+                    suggestion="Pas d'action de nettoyage nécessaire"
                 ))
         
-        if plan.action == ActionType.HEAD or plan.action == ActionType.TAIL:
-            # Pas de validation critique, mais on peut suggérer des filtres
-            pass
-    
-    def _validate_groupby(self, plan: PlanAction):
-        """Validation des opérations de groupby."""
-        if not plan.groupby_columns:
-            return
+        elif plan.action == ActionType.DETECTER_DOUBLONS:
+            n_duplicates = self.df.duplicated().sum()
+            if n_duplicates == 0:
+                self.issues.append(ValidationResult(
+                    level=ValidationLevel.INFO,
+                    code="AUCUN_DOUBLON",
+                    message="Aucune ligne dupliquée détectée",
+                    suggestion=None
+                ))
+            elif n_duplicates > len(self.df) * 0.5:
+                self.issues.append(ValidationResult(
+                    level=ValidationLevel.WARNING,
+                    code="TROP_DE_DOUBLONS",
+                    message=f"{n_duplicates} doublons ({n_duplicates/len(self.df)*100:.1f}%) - vérifiez l'unicité des IDs",
+                    suggestion="Les doublons massifs peuvent indiquer un problème de jointure"
+                ))
         
-        for col in plan.groupby_columns:
-            if col not in self.columns:
+        elif plan.action == ActionType.DETECTER_OUTLIERS:
+            if not self.numeric_columns:
                 self.issues.append(ValidationResult(
                     level=ValidationLevel.ERROR,
-                    code="GROUPBY_COLONNE_INEXISTANTE",
-                    message=f"La colonne de groupby '{col}' n'existe pas",
-                    suggestion=f"Colonnes disponibles: {', '.join(self.columns[:5])}"
+                    code="PAS_DE_NUMERIQUES_OUTLIERS",
+                    message="Détection d'outliers impossible sans colonnes numériques",
+                    suggestion=None
                 ))
-                continue
-            
-            # Vérifier le nombre de groupes
-            n_groups = self.df[col].nunique(dropna=True)
-            if n_groups > 100:
+            else:
+                # Vérifier la taille pour IQR
+                for col in self.numeric_columns[:3]:  # Vérifier les 3 premières
+                    if len(self.df) < 10:
+                        self.issues.append(ValidationResult(
+                            level=ValidationLevel.WARNING,
+                            code="DATASET_TROP_PETIT_OUTLIERS",
+                            message=f"Dataset très petit ({len(self.df)} lignes), la détection d'outliers est peu fiable",
+                            suggestion=None
+                        ))
+                        break
+
+    def _validate_exploration(self, plan: PlanAction):
+        """Validation pour l'exploration."""
+        # Describe et dtypes toujours faisables
+        
+        if plan.action == ActionType.CORRELATION:
+            n_numeric = len(self.numeric_columns)
+            if n_numeric < 2:
+                self.issues.append(ValidationResult(
+                    level=ValidationLevel.ERROR,
+                    code="CORRELATION_IMPOSSIBLE",
+                    message=f"Matrice de corrélation nécessite 2+ colonnes numériques, vous en avez {n_numeric}",
+                    suggestion=None
+                ))
+            elif n_numeric > 20:
                 self.issues.append(ValidationResult(
                     level=ValidationLevel.WARNING,
-                    code="TROP_DE_GROUPES",
-                    message=f"La colonne '{col}' crée {n_groups} groupes",
-                    suggestion="Envisagez de regrouper les valeurs rares ou d'utiliser une autre colonne"
+                    code="TROP_DE_COLONNES_CORR",
+                    message=f"{n_numeric} colonnes numériques - la matrice sera grande",
+                    suggestion="Sélectionnez des colonnes spécifiques pour une meilleure lisibilité"
                 ))
-            
-            if n_groups == 1:
+
+    def _validate_groupby(self, plan: PlanAction):
+        """Validation du groupby."""
+        if not plan.groupby_column:
+            return
+        
+        groupby_col = plan.groupby_column
+        
+        # La colonne existe ?
+        if groupby_col not in self.columns:
+            self.issues.append(ValidationResult(
+                level=ValidationLevel.ERROR,
+                code="GROUPBY_COLONNE_INEXISTANTE",
+                message=f"Colonne de groupby '{groupby_col}' introuvable",
+                suggestion=None
+            ))
+            return
+        
+        # La colonne est-elle catégorielle ?
+        if groupby_col in self.numeric_columns:
+            n_unique = self.df[groupby_col].nunique()
+            if n_unique > 1000:
                 self.issues.append(ValidationResult(
                     level=ValidationLevel.WARNING,
-                    code="UN_SEUL_GROUPE",
-                    message=f"La colonne '{col}' ne crée qu'un seul groupe",
-                    suggestion="Le groupby n'aura aucun effet avec une seule catégorie"
-                ))
-            
-            # Vérifier les valeurs manquantes dans le groupby
-            missing_in_group = self.df[col].isna().sum()
-            if missing_in_group > 0:
-                self.issues.append(ValidationResult(
-                    level=ValidationLevel.WARNING,
-                    code="VALEURS_MANQUANTES_GROUPBY",
-                    message=f"{missing_in_group:,} valeurs manquantes dans '{col}' seront exclues du groupby",
-                    suggestion="Envisagez de remplir les valeurs manquantes avant le groupby"
+                    code="GROUPBY_NUMERIQUE_DENSE",
+                    message=f"'{groupby_col}' est numérique avec {n_unique} valeurs uniques",
+                    suggestion="Envisagez de discrétiser en bins ou utilisez une colonne catégorielle"
                 ))
         
-        # Vérifier la cohérence groupby + agrégation
-        if plan.groupby_columns and plan.intention == IntentionType.STATISTIQUE:
+        # Trop de groupes ?
+        n_groups = self.df[groupby_col].nunique()
+        if n_groups > 1000:
+            self.issues.append(ValidationResult(
+                level=ValidationLevel.WARNING,
+                code="TROP_DE_GROUPES",
+                message=f"{n_groups} groupes uniques - le résultat sera volumineux",
+                suggestion="Filtrez les groupes principaux ou agrégez"
+            ))
+        elif n_groups == 1:
+            self.issues.append(ValidationResult(
+                level=ValidationLevel.INFO,
+                code="UN_SEUL_GROUPE",
+                message=f"Une seule valeur dans '{groupby_col}', le groupby est inutile",
+                suggestion="Supprimez 'par {groupby_col}' de votre requête"
+            ))
+        
+        # Y a-t-il des valeurs manquantes dans le groupby ?
+        null_ratio = self.df[groupby_col].isnull().mean()
+        if null_ratio > 0:
+            self.issues.append(ValidationResult(
+                level=ValidationLevel.WARNING,
+                code="MANQUANTS_DANS_GROUPBY",
+                message=f"{null_ratio*100:.1f}% de valeurs manquantes dans '{groupby_col}'",
+                suggestion="Ces lignes seront exclues du groupby"
+            ))
+
+    def _validate_filters(self, plan: PlanAction):
+        """Validation des conditions de filtrage."""
+        for i, filter_cond in enumerate(plan.filter_conditions):
+            # Vérifier que les valeurs ont du sens
+            if filter_cond.get('operator') in ['>', '<', '>=', '<=']:
+                value = filter_cond.get('value')
+                try:
+                    float(value)
+                except (ValueError, TypeError):
+                    self.issues.append(ValidationResult(
+                        level=ValidationLevel.ERROR,
+                        code="FILTRE_VALEUR_NON_NUMERIQUE",
+                        message=f"Filtre #{i+1}: '{value}' n'est pas un nombre pour une comparaison",
+                        suggestion=None
+                    ))
+
+    def _validate_coherence(self, plan: PlanAction):
+        """Validation de cohérence globale."""
+        # Vérifier que le plan a un sens dans son ensemble
+        
+        # 1. Groupby sans colonnes cibles numériques pour les stats
+        if plan.groupby_column and plan.intention == IntentionType.STATISTIQUE:
             if not plan.target_columns:
                 self.issues.append(ValidationResult(
                     level=ValidationLevel.ERROR,
-                    code="GROUPBY_SANS_AGGREGATION",
+                    code="GROUPBY_SANS_COLONNE_CIBLE",
                     message="Groupby spécifié mais aucune colonne à agréger",
-                    suggestion="Précisez quelles colonnes agréger (ex: 'moyenne de X par Y')"
-                ))
-    
-    def _validate_filters(self, plan: PlanAction):
-        """Validation des filtres."""
-        if not plan.filters:
-            return
-        
-        for i, filt in enumerate(plan.filters):
-            col = filt.get('column')
-            op = filt.get('operator')
-            val = filt.get('value')
-            
-            if col not in self.columns:
-                self.issues.append(ValidationResult(
-                    level=ValidationLevel.ERROR,
-                    code=f"FILTRE_COLONNE_INEXISTANTE_{i}",
-                    message=f"Le filtre #{i+1} référence une colonne inexistante: '{col}'",
-                    suggestion=f"Colonnes disponibles: {', '.join(self.columns[:5])}"
-                ))
-                continue
-            
-            # Vérifier l'opérateur
-            valid_operators = ['==', '!=', '>', '<', '>=', '<=', 'in', 'not in', 'contains', 'startswith', 'endswith']
-            if op not in valid_operators:
-                self.issues.append(ValidationResult(
-                    level=ValidationLevel.ERROR,
-                    code=f"OPERATEUR_INVALIDE_{i}",
-                    message=f"Opérateur '{op}' non reconnu dans le filtre #{i+1}",
-                    suggestion=f"Opérateurs valides: {', '.join(valid_operators)}"
-                ))
-            
-            # Vérifier la cohérence type/valeur
-            if col in self.numeric_columns:
-                try:
-                    float(val)
-                except (ValueError, TypeError):
-                    if op not in ['in', 'not in']:  # Pour in/not in, on accepte les listes
-                        self.issues.append(ValidationResult(
-                            level=ValidationLevel.WARNING,
-                            code=f"TYPE_FILTRE_MISMATCH_{i}",
-                            message=f"La valeur '{val}' ne semble pas numérique pour la colonne '{col}'",
-                            suggestion=f"Utilisez une valeur numérique ou convertissez la colonne"
-                        ))
-            
-            # Vérifier si le filtre va tout éliminer
-            if col in self.columns:
-                try:
-                    mask = self._apply_filter_mask(col, op, val)
-                    n_remaining = mask.sum()
-                    if n_remaining == 0:
-                        self.issues.append(ValidationResult(
-                            level=ValidationLevel.ERROR,
-                            code=f"FILTRE_TROP_RESTRICTIF_{i}",
-                            message=f"Le filtre #{i+1} ({col} {op} {val}) élimine toutes les lignes",
-                            suggestion="Adoucissez les critères de filtrage"
-                        ))
-                    elif n_remaining < len(self.df) * 0.01:  # Moins de 1% restant
-                        self.issues.append(ValidationResult(
-                            level=ValidationLevel.WARNING,
-                            code=f"FILTRE_TRES_RESTRICTIF_{i}",
-                            message=f"Le filtre #{i+1} ne laisse que {n_remaining:,} lignes ({n_remaining/len(self.df):.1%})",
-                            suggestion="Vérifiez que ce filtrage est intentionnel"
-                        ))
-                except Exception:
-                    pass  # On ignore les erreurs de prévisualisation
-    
-    def _validate_coherence(self, plan: PlanAction):
-        """Validation de cohérence globale du plan."""
-        # Vérifier les conflits d'intention
-        if plan.intention == IntentionType.VISUALISATION and plan.action == ActionType.CORRELATION:
-            if len(plan.target_columns) > 5:
-                self.issues.append(ValidationResult(
-                    level=ValidationLevel.WARNING,
-                    code="MATRICE_CORRELATION_TROP_GRANDE",
-                    message=f"Matrice de corrélation avec {len(plan.target_columns)} colonnes",
-                    suggestion="Envisagez de sélectionner moins de colonnes pour une meilleure lisibilité"
+                    suggestion="Précisez quelle colonne numérique agréger, ex: 'moyenne de Age par Gender'"
                 ))
         
-        # Vérifier la mémoire pour les grosses opérations
-        estimated_memory = self._estimate_memory_usage(plan)
-        if estimated_memory > 1e9:  # > 1GB
+        # 2. Visualisation sans données suffisantes
+        if plan.intention == IntentionType.VISUALISATION and len(self.df) == 0:
+            self.issues.append(ValidationResult(
+                level=ValidationLevel.ERROR,
+                code="DATASET_VIDE",
+                message="Impossible de visualiser un dataset vide",
+                suggestion=None
+            ))
+        
+        # 3. Trop de colonnes cibles
+        if len(plan.target_columns) > 5:
             self.issues.append(ValidationResult(
                 level=ValidationLevel.WARNING,
-                code="OPERATION_GOURMANDE_MEMOIRE",
-                message=f"Opération potentiellement gourmande en mémoire (~{estimated_memory/1e9:.1f} GB estimés)",
-                suggestion="Envisagez d'échantillonner les données ou d'optimiser l'opération"
+                code="TROP_DE_COLONNES_CIBLES",
+                message=f"{len(plan.target_columns)} colonnes cibles - limitez à 2-3 pour la lisibilité",
+                suggestion=f"Concentrez-vous sur: {', '.join(plan.target_columns[:3])}"
             ))
-        
-        # Vérifier les actions redondantes
-        if plan.action == ActionType.MOYENNE and len(plan.target_columns) == len(self.numeric_columns):
-            self.issues.append(ValidationResult(
-                level=ValidationLevel.INFO,
-                code="ANALYSE_TOUTES_COLONNES",
-                message="Analyse de toutes les colonnes numériques demandée",
-                suggestion="Cela peut être intentionnel, mais vérifiez que vous n'avez pas besoin de filtrer"
-            ))
-    
-    def _apply_filter_mask(self, col: str, op: str, val) -> pd.Series:
-        """Applique un filtre pour vérification (sans modifier le dataframe)."""
-        series = self.df[col]
-        
-        if op == '==':
-            return series == val
-        elif op == '!=':
-            return series != val
-        elif op == '>':
-            return series > val
-        elif op == '<':
-            return series < val
-        elif op == '>=':
-            return series >= val
-        elif op == '<=':
-            return series <= val
-        elif op == 'in':
-            return series.isin(val if isinstance(val, list) else [val])
-        elif op == 'not in':
-            return ~series.isin(val if isinstance(val, list) else [val])
-        elif op == 'contains':
-            return series.astype(str).str.contains(str(val), na=False)
-        elif op == 'startswith':
-            return series.astype(str).str.startswith(str(val), na=False)
-        elif op == 'endswith':
-            return series.astype(str).str.endswith(str(val), na=False)
-        else:
-            return pd.Series([True] * len(self.df))
-    
-    def _estimate_memory_usage(self, plan: PlanAction) -> int:
-        """Estime l'utilisation mémoire d'une opération en octets."""
-        base_memory = self.df.memory_usage(deep=True).sum()
-        
-        multipliers = {
-            ActionType.CORRELATION: 2.0,
-            ActionType.REGRESSION: 3.0,
-            ActionType.SCATTER_PLOT: 1.5,
-            ActionType.DETECTER_OUTLIERS: 1.2,
-            ActionType.GROUPBY_AGG: 2.5,
-        }
-        
-        multiplier = multipliers.get(plan.action, 1.0)
-        
-        # Ajouter un facteur pour le groupby
-        if plan.groupby_columns:
-            multiplier *= 1.5
-        
-        return int(base_memory * multiplier)
 
 
-# Fonction utilitaire pour validation rapide
-def validate_plan(df: pd.DataFrame, plan: PlanAction) -> Tuple[bool, List[ValidationResult]]:
+def validate_plan(plan: PlanAction, df: pd.DataFrame) -> Tuple[bool, List[ValidationResult]]:
     """
-    Valide un plan d'action de manière simple.
-    
-    Args:
-        df: DataFrame à analyser
-        plan: Plan d'action à valider
+    Fonction utilitaire pour valider un plan.
     
     Returns:
-        Tuple (est_valide, liste_des_problèmes)
+        (is_valid, list_of_issues)
     """
     validator = PlanValidator(df)
     return validator.validate(plan)
-
-
-def format_validation_results(results: List[ValidationResult]) -> str:
-    """
-    Formate les résultats de validation pour affichage.
-    
-    Args:
-        results: Liste des résultats de validation
-    
-    Returns:
-        Chaîne formatée
-    """
-    if not results:
-        return "✅ Aucun problème détecté"
-    
-    lines = []
-    for r in results:
-        icon = "ℹ️" if r.level == ValidationLevel.INFO else "⚠️" if r.level == ValidationLevel.WARNING else "❌"
-        lines.append(f"{icon} [{r.code}] {r.message}")
-        if r.suggestion:
-            lines.append(f"   💡 {r.suggestion}")
-    
-    return "\n".join(lines)
